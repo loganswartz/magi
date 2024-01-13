@@ -11,8 +11,7 @@ pub struct SM83RegisterBank {
     pub e: u8,
     pub h: u8,
     pub l: u8,
-    // flags
-    pub f: FlagRegister,
+    pub flags: FlagRegister,
 
     // 16 bit
     // program counter
@@ -23,6 +22,28 @@ pub struct SM83RegisterBank {
     // instruction clock
     pub m: u8,
     pub t: u8,
+}
+
+impl SM83RegisterBank {
+    /// Helper function to get the value of a 16-bit register.
+    pub fn combined(&self, first: u8, second: u8) -> u16 {
+        u16::from_le_bytes([first, second])
+    }
+
+    pub fn split(&mut self, value: u16) -> [u8; 2] {
+        value.to_le_bytes()
+    }
+
+    pub fn hl(&self) -> u16 {
+        self.combined(self.h, self.l)
+    }
+
+    pub fn set_hl(&mut self, value: u16) {
+        let [first, second] = self.split(value);
+
+        self.h = first;
+        self.l = second;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -134,22 +155,22 @@ impl FlagRegister {
     }
 
     /// Check if a given bit is set.
-    pub fn check(&self, flag: Flag) -> bool {
-        (flag & self.value) == flag
+    pub fn check(&mut self, flag: Flag) -> bool {
+        (flag.value() & self.value) == flag
     }
 
     /// Set a given bit.
-    pub fn set(&self, flag: Flag) {
+    pub fn set(&mut self, flag: Flag) {
         self.value |= flag;
     }
 
     /// Clear a given bit.
-    pub fn unset(&self, flag: Flag) {
+    pub fn unset(&mut self, flag: Flag) {
         self.value &= !flag;
     }
 
     /// Clear all flags.
-    pub fn clear(&self) {
+    pub fn clear(&mut self) {
         self.value = 0b0000_0000;
     }
 }
@@ -164,7 +185,7 @@ impl SM83RegisterBank {
             e: 0,
             h: 0,
             l: 0,
-            f: FlagRegister::new(),
+            flags: FlagRegister::new(),
             pc: 0,
             sp: 0,
             m: 0,

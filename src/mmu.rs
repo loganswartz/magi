@@ -1,16 +1,20 @@
+use std::cell::RefCell;
+
+use MemoryLocation::*;
+
 pub struct MMU {
     // general RAM
-    wram: Vec<u8>, // 8KB
-    hram: Vec<u8>, // 128B
+    wram: RefCell<Vec<u8>>, // 8KB
+    hram: RefCell<Vec<u8>>, // 128B
     // graphics RAM
-    vram: Vec<u8>, // 8KB
+    vram: RefCell<Vec<u8>>, // 8KB
     // I/O registers
-    io: Vec<u8>,            // 128B
-    cartridge: Vec<u8>,     // 16KB
-    cartridge_mbc: Vec<u8>, // 16KB
-    cartridge_ram: Vec<u8>, // 16KB
-    oam: Vec<u8>,           // 160B
-    ie: Vec<u8>,
+    io: RefCell<Vec<u8>>,            // 128B
+    cartridge: RefCell<Vec<u8>>,     // 16KB
+    cartridge_mbc: RefCell<Vec<u8>>, // 16KB
+    cartridge_ram: RefCell<Vec<u8>>, // 16KB
+    oam: RefCell<Vec<u8>>,           // 160B
+    ie: RefCell<Vec<u8>>,
 }
 
 // pub struct Cartridge {
@@ -33,23 +37,6 @@ pub enum MemoryLocation {
 }
 
 impl MemoryLocation {
-    fn to_register(&self, mmu: &MMU) -> (&Vec<u8>, usize) {
-        let register = match self {
-            self::Cartridge(_) => &mmu.cartridge,
-            self::CartridgeMBC(_) => &mmu.cartridge_mbc,
-            self::VRAM(_) => &mmu.vram,
-            self::CartridgeRAM(_) => &mmu.cartridge_ram,
-            self::WRAM(_) => &mmu.wram,
-            self::EchoRAM(_) => &mmu.wram,
-            self::OAM(_) => &mmu.oam,
-            self::HRAM(_) => &mmu.hram,
-            self::IO(_) => &mmu.io,
-            self::IE(_) => &mmu.ie,
-        };
-
-        (register, self.unwrap_value().into())
-    }
-
     fn unwrap_value(&self) -> u16 {
         match self {
             self::Cartridge(addr) => *addr,
@@ -65,25 +52,24 @@ impl MemoryLocation {
         }
     }
 }
-use MemoryLocation::*;
 
 impl MMU {
     pub fn new() -> Self {
         MMU {
-            wram: vec![0; 8192],
-            hram: vec![0; 128],
-            vram: vec![0; 8192],
-            io: vec![0; 128],
-            cartridge: vec![0; 16384],
-            cartridge_mbc: vec![0; 16384],
-            cartridge_ram: vec![0; 16384],
-            oam: vec![0; 160],
-            ie: vec![0],
+            wram: vec![0; 8192].into(),
+            hram: vec![0; 128].into(),
+            vram: vec![0; 8192].into(),
+            io: vec![0; 128].into(),
+            cartridge: vec![0; 16384].into(),
+            cartridge_mbc: vec![0; 16384].into(),
+            cartridge_ram: vec![0; 16384].into(),
+            oam: vec![0; 160].into(),
+            ie: vec![0].into(),
         }
     }
 
-    fn map_register(&self, location: &MemoryLocation) -> &Vec<u8> {
-        match location {
+    fn map_register(&self, location: MemoryLocation) -> (&RefCell<Vec<u8>>, usize) {
+        let register = match location {
             Cartridge(_) => &self.cartridge,
             CartridgeMBC(_) => &self.cartridge_mbc,
             VRAM(_) => &self.vram,
@@ -94,45 +80,49 @@ impl MMU {
             HRAM(_) => &self.hram,
             IO(_) => &self.io,
             IE(_) => &self.ie,
-        }
+        };
+
+        (register, location.unwrap_value().into())
     }
 
     /// Read a byte (u8) from a memory address.
-    pub fn read_byte(&self, addr: u16) -> Option<&u8> {
+    pub fn read_byte(&self, addr: u16) -> Option<u8> {
         let location = self.get_location(addr);
 
-        let (register, offset) = location.to_register(self);
+        let (register, offset) = self.map_register(location);
 
-        register.get(offset)
+        register.borrow().get(offset).map(|byte| *byte)
     }
 
     /// Read a 16-bit word (u16) from a memory address.
-    pub fn read_word(&self, addr: u16) -> Option<&u16> {
+    pub fn read_word(&self, addr: u16) -> Option<u16> {
         let location = self.get_location(addr);
 
-        let (register, offset) = location.to_register(self);
-        let first = *register.get(offset)?;
-        let second = *register.get(offset + 1)?;
+        let (register, offset) = self.map_register(location);
+        let first = *register.borrow().get(offset)?;
+        let second = *register.borrow().get(offset + 1)?;
 
-        Some(&u16::from_le_bytes([first, second]))
+        Some(u16::from_le_bytes([first, second]))
     }
 
     /// Write a byte (u8) to a memory address.
     pub fn write_byte(&self, addr: u16, value: u8) -> () {
         let location = self.get_location(addr);
 
-        let (register, offset) = location.to_register(self);
+        let (register, offset) = self.map_register(location);
 
-        register[offset] = value;
+        register.borrow_mut()[offset] = value;
     }
 
     /// Write a 16-bit word (u16) to a memory address.
     pub fn write_word(&self, addr: u16, value: u16) -> () {
         let location = self.get_location(addr);
 
-        let (register, offset) = location.to_register(self);
+        let (register, offset) = self.map_register(location);
 
         let bytes = value.to_le_bytes();
+
+        let mut register = register.borrow_mut();
         register[offset] = bytes[0];
         register[offset + 1] = bytes[1];
     }

@@ -6,7 +6,14 @@ pub struct GB {
 }
 
 impl GB {
-    fn run(&self) {
-        self.cpu.run(self)
+    fn new() -> Self {
+        GB {
+            cpu: SM83::new(),
+            mmu: MMU::new(),
+        }
+    }
+
+    fn run(&mut self) {
+        self.cpu.run(&self.mmu)
     }
 }

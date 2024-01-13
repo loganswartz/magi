@@ -1,4 +1,7 @@
-use crate::cpu::{registers::Flag, sm83::SM83};
+use crate::{
+    cpu::{registers::Flag, sm83::SM83},
+    mmu::MMU,
+};
 
 use lazy_static::lazy_static;
 use paste::paste;
@@ -10,9 +13,9 @@ use std::collections::HashMap;
 /// and the second element is the number of cycles the operation takes.
 #[derive(Debug, Clone, Copy)]
 pub enum Opcode<CPU> {
-    Unary(fn(&mut CPU), u8),
-    Binary(fn(&mut CPU, u8), u8),
-    Ternary(fn(&mut CPU, u8, u8), u8),
+    Unary(fn(&mut CPU, &MMU), u8),
+    Binary(fn(&mut CPU, &MMU, u8), u8),
+    Ternary(fn(&mut CPU, &MMU, u8, u8), u8),
 }
 
 impl<T> Opcode<T> {
@@ -39,24 +42,48 @@ pub type OperationsMap<CPU> = HashMap<u8, Opcode<CPU>>;
 //     }
 // }
 
-fn nop(cpu: &mut SM83) {
+fn nop(_: &mut SM83, _: &MMU) {
     //
+}
+
+fn increment_hl_addr(cpu: &mut SM83, mmu: &MMU) {
+    cpu.registers.flags.clear();
+    let addr = cpu.registers.hl();
+
+    mmu.write_byte(
+        addr,
+        match mmu
+            .read_byte(addr)
+            .expect("should be able to read byte")
+            .checked_add(1)
+        {
+            Some(0) => {
+                cpu.registers.flags.set(Flag::Zero);
+                0
+            }
+            Some(val) => val,
+            None => {
+                cpu.registers.flags.set(Flag::Carry);
+                return;
+            }
+        },
+    )
 }
 
 macro_rules! increment8 {
     ($reg:ident) => {
         paste! {
-            fn [<increment_ $reg>](cpu: &mut SM83) {
-                cpu.registers.f.clear();
+            fn [<increment_ $reg>](cpu: &mut SM83, _: &MMU) {
+                cpu.registers.flags.clear();
 
                 cpu.registers.$reg = match cpu.registers.$reg.checked_add(1) {
                     Some(0) => {
-                        cpu.registers.f.set(Flag::Zero);
+                        cpu.registers.flags.set(Flag::Zero);
                         0
                     },
                     Some(val) => val,
                     None => {
-                        cpu.registers.f.set(Flag::Carry);
+                        cpu.registers.flags.set(Flag::Carry);
                         return;
                     }
                 }
@@ -68,22 +95,45 @@ macro_rules! increment8 {
 macro_rules! increment16 {
     ($regA:ident, $regB:ident) => {
         paste! {
-            fn [<increment_ $regA $regB>](cpu: &mut SM83) {
-                let combined = ((cpu.registers.$regA as u16) << 8) | cpu.registers.$regB as u16;
+            fn [<increment_ $regA $regB>](cpu: &mut SM83, _: &MMU) {
+                let combined = cpu.registers.combined(cpu.registers.$regA, cpu.registers.$regB);
                 let result = match combined.checked_add(1) {
                     Some(0) => {
-                        cpu.registers.f.set(Flag::Zero);
+                        cpu.registers.flags.set(Flag::Zero);
                         0
                     },
                     Some(val) => val,
                     None => {
-                        cpu.registers.f.set(Flag::Carry);
+                        cpu.registers.flags.set(Flag::Carry);
                         return;
                     }
                 };
 
-                cpu.registers.$regA = (result >> 8) as u8;
-                cpu.registers.$regB = result as u8;
+                let [a, b] = cpu.registers.split(result);
+                cpu.registers.$regA = a;
+                cpu.registers.$regB = b;
+            }
+        }
+    };
+}
+
+macro_rules! add_to_hl {
+    ($regA:ident, $regB:ident) => {
+        paste! {
+            fn [<add_ $regA $regB _to_hl>](cpu: &mut SM83, _: &MMU) {
+                let value = match cpu.registers.hl().checked_add(cpu.registers.hl()) {
+                    Some(0) => {
+                        cpu.registers.flags.set(Flag::Zero);
+                        0
+                    },
+                    Some(val) => val,
+                    None => {
+                        cpu.registers.flags.set(Flag::Carry);
+                        return;
+                    }
+                };
+
+                cpu.registers.set_hl(value);
             }
         }
     };
@@ -92,17 +142,17 @@ macro_rules! increment16 {
 macro_rules! decrement8 {
     ($reg:ident) => {
         paste! {
-            fn [<decrement_ $reg>](cpu: &mut SM83) {
-                cpu.registers.f.clear();
+            fn [<decrement_ $reg>](cpu: &mut SM83, _: &MMU) {
+                cpu.registers.flags.clear();
 
                 cpu.registers.$reg = match cpu.registers.$reg.checked_sub(1) {
                     Some(0) => {
-                        cpu.registers.f.set(Flag::Zero);
+                        cpu.registers.flags.set(Flag::Zero);
                         0
                     },
                     Some(val) => val,
                     None => {
-                        cpu.registers.f.set(Flag::Carry);
+                        cpu.registers.flags.set(Flag::Carry);
                         return;
                     }
                 }
@@ -114,22 +164,23 @@ macro_rules! decrement8 {
 macro_rules! decrement16 {
     ($regA:ident, $regB:ident) => {
         paste! {
-            fn [<decrement_ $regA $regB>](cpu: &mut SM83) {
-                let combined = ((cpu.registers.$regA as u16) << 8) | cpu.registers.$regB as u16;
+            fn [<decrement_ $regA $regB>](cpu: &mut SM83, _: &MMU) {
+                let combined = cpu.registers.combined(cpu.registers.$regA, cpu.registers.$regB);
                 let result = match combined.checked_sub(1) {
                     Some(0) => {
-                        cpu.registers.f.set(Flag::Zero);
+                        cpu.registers.flags.set(Flag::Zero);
                         0
                     },
                     Some(val) => val,
                     None => {
-                        cpu.registers.f.set(Flag::Carry);
+                        cpu.registers.flags.set(Flag::Carry);
                         return;
                     }
                 };
 
-                cpu.registers.$regA = (result >> 8) as u8;
-                cpu.registers.$regB = result as u8;
+                let [a, b] = cpu.registers.split(result);
+                cpu.registers.$regA = a;
+                cpu.registers.$regB = b;
             }
         }
     };
@@ -138,7 +189,7 @@ macro_rules! decrement16 {
 macro_rules! load_immediate8 {
     ($reg:ident) => {
         paste! {
-            fn [<load_immediate_into_ $reg>](cpu: &mut SM83, immediate: u8) {
+            fn [<load_immediate_into_ $reg>](cpu: &mut SM83, _: &MMU, immediate: u8) {
                 cpu.registers.$reg = immediate;
             }
         }
@@ -148,7 +199,7 @@ macro_rules! load_immediate8 {
 macro_rules! load_immediate16 {
     ($regA:ident,$regB:ident) => {
         paste! {
-            fn [<load_immediate_into_ $regA $regB>](cpu: &mut SM83, a: u8, b: u8) {
+            fn [<load_immediate_into_ $regA $regB>](cpu: &mut SM83, _: &MMU, a: u8, b: u8) {
                 cpu.registers.$regA = a;
                 cpu.registers.$regB = b;
             }
@@ -159,31 +210,52 @@ macro_rules! load_immediate16 {
 macro_rules! load_reg_into_reg16_addr {
     ($source:ident,$destA:ident,$destB:ident) => {
         paste! {
-            fn [<load_ $source _into_ $destA $destB _address>](cpu: &mut SM83) {
-                let addr = ((cpu.registers.$destA as u16) << 8) | cpu.registers.$destB as u16;
+            fn [<load_ $source _into_ $destA $destB _address>](cpu: &mut SM83, mmu: &MMU) {
+                let addr = cpu.registers.combined(cpu.registers.$destA, cpu.registers.$destB);
 
-                cpu.mmu.write_byte(addr, cpu.registers.$source);
+                mmu.write_byte(addr, cpu.registers.$source);
             }
         }
     };
 }
 
-increment16!(b, c);
+increment8!(a);
 increment8!(b);
+increment8!(c);
+increment8!(d);
+increment8!(e);
+increment8!(h);
+increment8!(l);
+
+increment16!(b, c);
+increment16!(d, e);
+increment16!(h, l);
+// increment16!(s, p);
+
 decrement8!(b);
+
+decrement16!(b, c);
+decrement16!(d, e);
+decrement16!(h, l);
+
+add_to_hl!(b, c);
+add_to_hl!(d, e);
+add_to_hl!(h, l);
+// add_to_hl!(s, p);
+
 load_immediate8!(b);
 load_immediate16!(b, c);
 load_reg_into_reg16_addr!(a, b, c);
 
-fn rotate_a_left_with_carry(cpu: &mut SM83) {
+fn rotate_a_left_with_carry(_cpu: &mut SM83, _mmu: &MMU) {
     //
 }
 
-fn load_sp_into_immediate_address(cpu: &mut SM83, a: u8, b: u8) {
+fn load_sp_into_immediate_address(_cpu: &mut SM83, _mmu: &MMU, _a: u8, _b: u8) {
     //
 }
 
-fn stop(cpu: &mut SM83, _: u8) {
+fn stop(_cpu: &mut SM83, _mmu: &MMU, _: u8) {
     //
 }
 
@@ -198,42 +270,42 @@ lazy_static! {
         (0x06u8, Opcode::Binary(load_immediate_into_b, 1)),
         (0x07u8, Opcode::Unary(rotate_a_left_with_carry, 1)),
         (0x08u8, Opcode::Ternary(load_sp_into_immediate_address, 1)),
-        (0x09u8, Opcode::Unary(nop, 1)),
+        (0x09u8, Opcode::Unary(add_bc_to_hl, 1)),
         (0x0Au8, Opcode::Unary(nop, 1)),
-        (0x0Bu8, Opcode::Unary(nop, 1)),
-        (0x0Cu8, Opcode::Unary(nop, 1)),
+        (0x0Bu8, Opcode::Unary(decrement_bc, 1)),
+        (0x0Cu8, Opcode::Unary(increment_c, 1)),
         (0x0Du8, Opcode::Unary(nop, 1)),
         (0x0Eu8, Opcode::Unary(nop, 1)),
         (0x0Fu8, Opcode::Unary(nop, 1)),
         (0x10u8, Opcode::Binary(stop, 1)),
         (0x11u8, Opcode::Unary(nop, 1)),
         (0x12u8, Opcode::Unary(nop, 1)),
-        (0x13u8, Opcode::Unary(nop, 1)),
-        (0x14u8, Opcode::Unary(nop, 1)),
+        (0x13u8, Opcode::Unary(increment_de, 1)),
+        (0x14u8, Opcode::Unary(increment_d, 1)),
         (0x15u8, Opcode::Unary(nop, 1)),
         (0x16u8, Opcode::Unary(nop, 1)),
         (0x17u8, Opcode::Unary(nop, 1)),
         (0x18u8, Opcode::Unary(nop, 1)),
-        (0x19u8, Opcode::Unary(nop, 1)),
+        (0x19u8, Opcode::Unary(add_de_to_hl, 1)),
         (0x1Au8, Opcode::Unary(nop, 1)),
-        (0x1Bu8, Opcode::Unary(nop, 1)),
-        (0x1Cu8, Opcode::Unary(nop, 1)),
+        (0x1Bu8, Opcode::Unary(decrement_de, 1)),
+        (0x1Cu8, Opcode::Unary(increment_e, 1)),
         (0x1Du8, Opcode::Unary(nop, 1)),
         (0x1Eu8, Opcode::Unary(nop, 1)),
         (0x1Fu8, Opcode::Unary(nop, 1)),
         (0x20u8, Opcode::Unary(nop, 1)),
         (0x21u8, Opcode::Unary(nop, 1)),
         (0x22u8, Opcode::Unary(nop, 1)),
-        (0x23u8, Opcode::Unary(nop, 1)),
-        (0x24u8, Opcode::Unary(nop, 1)),
+        (0x23u8, Opcode::Unary(increment_hl, 1)),
+        (0x24u8, Opcode::Unary(increment_h, 1)),
         (0x25u8, Opcode::Unary(nop, 1)),
         (0x26u8, Opcode::Unary(nop, 1)),
         (0x27u8, Opcode::Unary(nop, 1)),
         (0x28u8, Opcode::Unary(nop, 1)),
-        (0x29u8, Opcode::Unary(nop, 1)),
+        (0x29u8, Opcode::Unary(add_hl_to_hl, 1)),
         (0x2Au8, Opcode::Unary(nop, 1)),
-        (0x2Bu8, Opcode::Unary(nop, 1)),
-        (0x2Cu8, Opcode::Unary(nop, 1)),
+        (0x2Bu8, Opcode::Unary(decrement_hl, 1)),
+        (0x2Cu8, Opcode::Unary(increment_l, 1)),
         (0x2Du8, Opcode::Unary(nop, 1)),
         (0x2Eu8, Opcode::Unary(nop, 1)),
         (0x2Fu8, Opcode::Unary(nop, 1)),
@@ -241,7 +313,7 @@ lazy_static! {
         (0x31u8, Opcode::Unary(nop, 1)),
         (0x32u8, Opcode::Unary(nop, 1)),
         (0x33u8, Opcode::Unary(nop, 1)),
-        (0x34u8, Opcode::Unary(nop, 1)),
+        (0x34u8, Opcode::Unary(increment_hl_addr, 1)),
         (0x35u8, Opcode::Unary(nop, 1)),
         (0x36u8, Opcode::Unary(nop, 1)),
         (0x37u8, Opcode::Unary(nop, 1)),
@@ -249,7 +321,7 @@ lazy_static! {
         (0x39u8, Opcode::Unary(nop, 1)),
         (0x3Au8, Opcode::Unary(nop, 1)),
         (0x3Bu8, Opcode::Unary(nop, 1)),
-        (0x3Cu8, Opcode::Unary(nop, 1)),
+        (0x3Cu8, Opcode::Unary(increment_a, 1)),
         (0x3Du8, Opcode::Unary(nop, 1)),
         (0x3Eu8, Opcode::Unary(nop, 1)),
         (0x3Fu8, Opcode::Unary(nop, 1)),
@@ -446,4 +518,24 @@ lazy_static! {
         (0xFEu8, Opcode::Unary(nop, 1)),
         (0xFFu8, Opcode::Unary(nop, 1)),
     ]);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::mmu::MMU;
+
+    use super::*;
+
+    #[test]
+    fn test_nop() {
+        let mut cpu = SM83::new();
+        let mmu = MMU::new();
+        let opcode = 0x00u8;
+        let operation = SM83_OPERATIONS.get(&opcode).unwrap();
+
+        match operation {
+            Opcode::Unary(op, _) => op(&mut cpu, &mmu),
+            _ => panic!("Expected unary operation"),
+        }
+    }
 }

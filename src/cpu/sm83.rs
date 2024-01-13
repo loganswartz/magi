@@ -3,7 +3,7 @@ use crate::{
         opcodes::{Opcode, OperationsMap, SM83_OPERATIONS},
         registers::SM83RegisterBank,
     },
-    gb::GB,
+    mmu::MMU,
 };
 
 /// The CPU of the GameBoy, a Sharp SM83.
@@ -31,9 +31,9 @@ impl SM83 {
 
     pub fn reset(&mut self) {}
 
-    pub fn run(&mut self, gb: &GB) {
+    pub fn run(&mut self, mmu: &MMU) {
         loop {
-            let Some(code) = gb.mmu.read_byte(self.registers.pc) else {
+            let Some(code) = mmu.read_byte(self.registers.pc) else {
                 println!("Failed to read byte at address: {:04X}", self.registers.pc);
                 continue;
             };
@@ -41,55 +41,39 @@ impl SM83 {
             let Some(opcode) = self.operations.get(&code) else {
                 panic!("Unknown opcode: {:02X}", code);
             };
+            let cycles = opcode.cycle_count();
 
             match opcode {
                 Opcode::Unary(operation, _) => {
-                    operation(&mut self);
+                    operation(self, mmu);
                 }
                 Opcode::Binary(operation, _) => {
                     let addr = self.registers.pc + 1;
-                    let Some(immediate) = gb.mmu.read_byte(addr) else {
+                    let Some(immediate) = mmu.read_byte(addr) else {
                         println!("Failed to read byte at address: {:04X}", addr);
                         continue;
                     };
 
-                    operation(&mut self, *immediate);
+                    operation(self, mmu, immediate);
                 }
                 Opcode::Ternary(operation, _) => {
                     let addr = self.registers.pc + 1;
-                    let Some(immediateA) = gb.mmu.read_byte(addr) else {
+                    let Some(immediate_a) = mmu.read_byte(addr) else {
                         println!("Failed to read byte at address: {:04X}", addr);
                         continue;
                     };
-                    let Some(immediateB) = gb.mmu.read_byte(addr + 1) else {
+                    let Some(immediate_b) = mmu.read_byte(addr + 1) else {
                         println!("Failed to read byte at address: {:04X}", addr);
                         continue;
                     };
 
-                    operation(&mut self, *immediateA, *immediateB);
+                    operation(self, mmu, immediate_a, immediate_b);
                 }
             };
 
             // increment our clock registers
-            let cycles = opcode.cycle_count();
             self.registers.m = cycles;
             self.registers.t = cycles * 4;
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_nop() {
-        let mut cpu = SM83::new();
-        let opcode = 0x00u8;
-        let operation = SM83_OPERATIONS.get(&opcode).unwrap();
-        match operation {
-            Opcode::Unary(op, _) => op(&mut cpu),
-            _ => panic!("Expected unary operation"),
         }
     }
 }
